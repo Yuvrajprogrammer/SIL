@@ -1,0 +1,343 @@
+#define ENA 5
+#define IN1 6
+#define IN2 9
+
+#define ENB 3
+#define IN3 10
+#define IN4 8
+
+#define TRIG_PIN 11
+#define ECHO_PIN 12
+
+#define FLOW_PIN 2
+#define RELAY_PIN 4
+#define MQ135_PIN A0
+
+const int MOTOR_SPEED = 200;
+const int TRIGGER_DISTANCE = 15;
+
+const int RELAY_ON = HIGH;
+const int RELAY_OFF = LOW;
+
+volatile unsigned long pulseCount = 0;
+
+unsigned long lastFlowTime = 0;
+unsigned long lastPrintTime = 0;
+
+float flowRate = 0.0;
+
+bool autoMode = true;
+
+// ---------------- FLOW SENSOR ----------------
+
+void flowPulse() {
+  pulseCount++;
+}
+
+// ---------------- SETUP ----------------
+
+void setup() {
+
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  pinMode(FLOW_PIN, INPUT_PULLUP);
+
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(MQ135_PIN, INPUT);
+
+  Serial.begin(9600);
+
+  attachInterrupt(digitalPinToInterrupt(FLOW_PIN), flowPulse, RISING);
+
+  stopMotors();
+  digitalWrite(RELAY_PIN, RELAY_OFF);
+
+  Serial.println();
+  Serial.println("===== ROBOT SYSTEM =====");
+  Serial.println("F = Forward");
+  Serial.println("B = Backward");
+  Serial.println("L = Left");
+  Serial.println("R = Right");
+  Serial.println("S = Stop");
+  Serial.println("A = Automatic Ultrasonic Mode");
+  Serial.println("========================");
+
+  lastFlowTime = millis();
+}
+
+// ---------------- LOOP ----------------
+
+void loop() {
+
+  // Check Serial Monitor commands
+  if (Serial.available()) {
+
+    char command = Serial.read();
+
+    if (command == '\n' || command == '\r') {
+      return;
+    }
+
+    switch (command) {
+
+      case 'F':
+      case 'f':
+        autoMode = false;
+        forward();
+        digitalWrite(RELAY_PIN, RELAY_OFF);
+        Serial.println("MANUAL: FORWARD");
+        break;
+
+      case 'B':
+      case 'b':
+        autoMode = false;
+        backward();
+        digitalWrite(RELAY_PIN, RELAY_OFF);
+        Serial.println("MANUAL: BACKWARD");
+        break;
+
+      case 'L':
+      case 'l':
+        autoMode = false;
+        left();
+        digitalWrite(RELAY_PIN, RELAY_OFF);
+        Serial.println("MANUAL: LEFT");
+        break;
+
+      case 'R':
+      case 'r':
+        autoMode = false;
+        right();
+        digitalWrite(RELAY_PIN, RELAY_OFF);
+        Serial.println("MANUAL: RIGHT");
+        break;
+
+      case 'S':
+      case 's':
+        autoMode = false;
+        stopMotors();
+        digitalWrite(RELAY_PIN, RELAY_OFF);
+        Serial.println("MANUAL: STOP");
+        break;
+
+      case 'A':
+      case 'a':
+        autoMode = true;
+        Serial.println("AUTO MODE: ENABLED");
+        break;
+
+      default:
+        Serial.println("Unknown command");
+        break;
+    }
+  }
+
+  // ---------------- ULTRASONIC ----------------
+
+  int distance = getStableDistance();
+
+  // ---------------- AUTOMATIC MODE ----------------
+
+  if (autoMode) {
+
+    if (distance > 0 && distance <= TRIGGER_DISTANCE) {
+
+      forward();
+      digitalWrite(RELAY_PIN, RELAY_ON);
+
+    }
+    else {
+
+      stopMotors();
+      digitalWrite(RELAY_PIN, RELAY_OFF);
+    }
+  }
+
+  // ---------------- FLOW SENSOR ----------------
+
+  if (millis() - lastFlowTime >= 1000) {
+
+    noInterrupts();
+
+    unsigned long pulses = pulseCount;
+    pulseCount = 0;
+
+    interrupts();
+
+    flowRate = pulses / 7.5;
+
+    lastFlowTime = millis();
+  }
+
+  // ---------------- MQ135 ----------------
+
+  int mq135Value = analogRead(MQ135_PIN);
+
+  // ---------------- SERIAL DISPLAY ----------------
+
+  if (millis() - lastPrintTime >= 500) {
+
+    Serial.print("Mode: ");
+
+    if (autoMode) {
+      Serial.print("AUTO");
+    }
+    else {
+      Serial.print("MANUAL");
+    }
+
+    Serial.print(" | Distance: ");
+
+    if (distance == 0) {
+      Serial.print("NO READING");
+    }
+    else {
+      Serial.print(distance);
+      Serial.print(" cm");
+    }
+
+    Serial.print(" | Flow: ");
+    Serial.print(flowRate, 2);
+    Serial.print(" L/min");
+
+    Serial.print(" | MQ135: ");
+    Serial.print(mq135Value);
+
+    Serial.print(" | Relay: ");
+
+    if (autoMode && distance > 0 && distance <= TRIGGER_DISTANCE) {
+      Serial.print("ON");
+    }
+    else {
+      Serial.print("OFF");
+    }
+
+    Serial.println();
+
+    lastPrintTime = millis();
+  }
+}
+
+// ---------------- ULTRASONIC ----------------
+
+int getStableDistance() {
+
+  int readings[5];
+
+  for (int i = 0; i < 5; i++) {
+
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+
+    digitalWrite(TRIG_PIN, LOW);
+
+    long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+
+    if (duration == 0) {
+      readings[i] = 0;
+    }
+    else {
+      readings[i] = duration * 0.0343 / 2;
+    }
+
+    delay(10);
+  }
+
+  // Sort readings
+  for (int i = 0; i < 4; i++) {
+
+    for (int j = i + 1; j < 5; j++) {
+
+      if (readings[j] < readings[i]) {
+
+        int temp = readings[i];
+        readings[i] = readings[j];
+        readings[j] = temp;
+      }
+    }
+  }
+
+  return readings[2];
+}
+
+// ---------------- FORWARD ----------------
+
+void forward() {
+
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+}
+
+// ---------------- BACKWARD ----------------
+
+void backward() {
+
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+}
+
+// ---------------- LEFT ----------------
+
+void left() {
+
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+}
+
+// ---------------- RIGHT ----------------
+
+void right() {
+
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+}
+
+// ---------------- STOP ----------------
+
+void stopMotors() {
+
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+}
